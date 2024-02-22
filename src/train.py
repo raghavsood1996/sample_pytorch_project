@@ -1,103 +1,172 @@
-# src/train.py
-
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from model import SimpleNN
 from torch.utils.data import DataLoader, TensorDataset
+import torch.nn.init as init
 from sklearn.model_selection import train_test_split
-from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
-from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import StandardScaler, LabelEncoder
 import numpy as np
 import pandas as pd
 
-# Example parameters - adjust based on your dataset
-input_size = 11  # Number of input features
-hidden_size = 50  # Number of hidden units in each layer
-num_classes = 2 # Number of output classes
-num_epochs = 500
-batch_size = 5
-learning_rate = 0.001
+def initialize_weights(m):
+    """
+    Initializes the weights of the PyTorch model.
+    Applies Xavier uniform initialization to linear layers and sets biases to zero.
+    This helps in keeping the signal from becoming too small or too large during training.
+    
+    Args:
+    m (torch.nn.Module): PyTorch model or layer.
+    """
+    if isinstance(m, nn.Linear):
+        init.xavier_uniform_(m.weight)
+        if m.bias is not None:
+            init.constant_(m.bias, 0)
 
-# Example synthetic data
-# Load the dataset
-df = pd.read_csv('../data/loan_data.csv')
-df.dropna(inplace=True)
+def load_and_preprocess_data(filepath):
+    """
+    Loads the dataset from a CSV file, preprocesses it by encoding categorical variables,
+    handling missing values, and performing feature scaling.
+    
+    Args:
+    filepath (str): Path to the CSV file containing the dataset.
+    
+    Returns:
+    Tuple of numpy arrays: (X_train, X_test, y_train, y_test)
+    """
+    # Load the dataset
+    df = pd.read_csv(filepath)
+    df.dropna(inplace=True)
 
-df['Gender'] = df['Gender'].map({'Male': 1, 'Female': 0, '' : 0})
-df['Married'] = df['Married'].map({'Yes': 1, 'No': 0, '' : 0})
-df['Education'] = df['Education'].map({'Graduate': 1, 'Not Graduate': 0})
-df['Self_Employed'] = df['Self_Employed'].map({'Yes': 1, 'No': 0, '' : 0})
-df['Property_Area'] = df['Property_Area'].map({'Urban': 2, 'Semiurban': 1, 'Rural': 0, '' : 0})
-df['Dependents'] = df['Dependents'].str.rstrip('+')
+    # Encode categorical features
+    mappings = {
+        'Gender': {'Male': 1, 'Female': 0},
+        'Married': {'Yes': 1, 'No': 0},
+        'Education': {'Graduate': 1, 'Not Graduate': 0},
+        'Self_Employed': {'Yes': 1, 'No': 0},
+        'Property_Area': {'Urban': 2, 'Semiurban': 1, 'Rural': 0}
+    }
+    df.replace(mappings, inplace=True)
+    df['Dependents'] = df['Dependents'].str.rstrip('+').astype(float)
 
+    # Extract features and target variable
+    features = ['Gender', 'Married', 'Dependents', 'Education', 'Self_Employed', 
+                'ApplicantIncome', 'CoapplicantIncome', 'LoanAmount', 
+                'Loan_Amount_Term', 'Credit_History', 'Property_Area']
+    X = df[features].values
+    y = LabelEncoder().fit_transform(df['Loan_Status'].values)
 
-# Preprocess the data
-# This includes dropping unnecessary columns, handling missing values, etc.
-# For example, if 'feature1' and 'feature2' are your feature columns and 'label' is your target
-X = df[['Gender',
-        'Married',
-        'Dependents',
-        'Education',
-        'Self_Employed',
-        'ApplicantIncome',
-        'CoapplicantIncome',
-        'LoanAmount',
-        'Loan_Amount_Term',
-        'Credit_History',
-        'Property_Area']].values
+    # Split the dataset
+    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=41)
 
+    # Feature scaling
+    scaler = StandardScaler()
+    X_train = scaler.fit_transform(X_train)
+    X_test = scaler.transform(X_test)
+    
+    return X_train, X_test, y_train, y_test
 
-y = df['Loan_Status'].values
+def create_dataloaders(X_train, X_test, y_train, y_test, batch_size):
+    """
+    Creates DataLoader objects for the training and test sets.
+    
+    Args:
+    X_train, X_test, y_train, y_test: Numpy arrays containing the split dataset.
+    batch_size (int): Batch size for the DataLoader.
+    
+    Returns:
+    Tuple of DataLoader: (train_loader, test_loader)
+    """
+    # Convert to PyTorch tensors and create datasets
+    train_dataset = TensorDataset(torch.FloatTensor(X_train), torch.LongTensor(y_train))
+    test_dataset = TensorDataset(torch.FloatTensor(X_test), torch.LongTensor(y_test))
+    
+    # Create DataLoaders
+    train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
+    
+    return train_loader, test_loader
 
-# Optionally encode categorical variables if any
-# For binary classification, ensure your labels are encoded as 0 and 1
-label_encoder = LabelEncoder()
-y = label_encoder.fit_transform(y)
-print(y)
+def train_model(model, train_loader, criterion, optimizer, num_epochs):
+    """
+    Trains the PyTorch model using the given training DataLoader.
+    
+    Args:
+    model (torch.nn.Module): The PyTorch model to train.
+    train_loader (DataLoader): DataLoader for the training data.
+    criterion (torch.nn.modules.loss): Loss function.
+    optimizer (torch.optim.Optimizer): Optimizer.
+    num_epochs (int): Number of epochs to train for.
+    """
+    for epoch in range(num_epochs):
+        for i, (inputs, labels) in enumerate(train_loader):
+            # Forward pass
+            outputs = model(inputs)
+            loss = criterion(outputs, labels)
+            
+            # Backward and optimize
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            
+            if (i + 1) % 50 == 0:
+                print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{len(train_loader)}], Loss: {loss.item():.4f}')
 
+def evaluate_model(model, test_loader, num_classes):
+    """
+    Evaluates the trained PyTorch model on the test set.
+    
+    Args:
+    model (torch.nn.Module): The trained PyTorch model.
+    test_loader (DataLoader): DataLoader for the test data.
+    num_classes (int): Number of classes in the dataset.
+    """
+    model.eval()  # Set model to evaluation mode
+    with torch.no_grad():
+        n_correct = 0
+        n_samples = 0
+        n_class_correct = [0 for i in range(num_classes)]
+        n_class_samples = [0 for i in range(num_classes)]
+        for inputs, labels in test_loader:
+            outputs = model(inputs)
+            _, predicted = torch.max(outputs, 1)
+            n_samples += labels.size(0)
+            n_correct += (predicted == labels).sum().item()
+            
+            for i in range(len(labels)):
+                label = labels[i]
+                pred = predicted[i]
+                if label == pred:
+                    n_class_correct[label] += 1
+                n_class_samples[label] += 1
 
-# Split the dataset into training and test sets
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
-print(X_train.shape, X_test.shape, y_train.shape, y_test.shape)
+        acc = 100.0 * n_correct / n_samples
+        print(f'Accuracy of the network: {acc} %')
+        for i in range(num_classes):
+            acc = 100.0 * n_class_correct[i] / n_class_samples[i]
+            print(f'Accuracy of class {i}: {acc} %')
 
+def main():
+    """
+    Main function to run the training and evaluation of the model.
+    """
+    # Load and preprocess data
+    X_train, X_test, y_train, y_test = load_and_preprocess_data('../data/loan_data.csv')
+    
+    # Create DataLoaders
+    train_loader, test_loader = create_dataloaders(X_train, X_test, y_train, y_test, batch_size=4)
+    
+    # Initialize model, loss, and optimizer
+    model = SimpleNN(input_size=11, hidden_size=15, num_classes=2)
+    model.apply(initialize_weights)
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(model.parameters(), lr=0.0001)
+    
+    # Train the model
+    train_model(model, train_loader, criterion, optimizer, num_epochs=100)
+    
+    # Evaluate the model
+    evaluate_model(model, test_loader, num_classes=2)
 
-# Feature scaling
-scaler = StandardScaler()
-X_train = scaler.fit_transform(X_train)
-X_test = scaler.transform(X_test)
-
-train_dataset = TensorDataset(torch.from_numpy(X_train.astype(np.float32)), torch.from_numpy(y_train.astype(np.int64)))
-test_dataset = TensorDataset(torch.from_numpy(X_test.astype(np.float32)), torch.from_numpy(y_test.astype(np.int64)))
-
-
-train_loader = DataLoader(dataset=train_dataset, batch_size=batch_size, shuffle=True)
-test_loader = DataLoader(dataset=test_dataset, batch_size=batch_size, shuffle=False)
-
-model = SimpleNN(input_size, hidden_size, num_classes)
-
-# Loss and optimizer
-criterion = nn.CrossEntropyLoss()
-optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
-# Train the model
-for epoch in range(num_epochs):
-    for i, (inputs, labels) in enumerate(train_loader):
-        # Forward pass
-        # print(inputs)
-        
-        outputs = model(inputs)
-        
-        loss = criterion(outputs, labels)
-        
-        # Backward and optimize
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        
-        if (i+1) % 50 == 0:
-            print(f'Epoch [{epoch+1}/{num_epochs}], Step [{i+1}/{len(train_loader)}], Loss: {loss.item():.4f}')
-
-print("Finished Training")
+if __name__ == '__main__':
+    main()
